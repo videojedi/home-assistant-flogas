@@ -2,204 +2,40 @@
 from __future__ import annotations
 
 import logging
-import urllib.parse
 from datetime import timedelta
+from typing import Any
+import urllib.parse
 
 import aiohttp
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import (
-    DataUpdateCoordinator,
-    UpdateFailed,
-)
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import (
-    CONF_EMAIL,
-    CONF_PASSWORD,
-    API_DATA_URL,
-    CSRF_COOKIE_URL,
-    LOGIN_URL,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    USER_AGENT,
-)
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
-
-class FlogasAPI:
-    """API client for Flogas portal."""
-
-    def __init__(self, email: str, password: str) -> None:
-        """Initialize the API client."""
-        self.email = email
-        self.password = password
-        self._session: aiohttp.ClientSession | None = None
-        self._token: str | None = None
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
-        if self._session is None or self._session.closed:
-            jar = aiohttp.CookieJar()
-            self._session = aiohttp.ClientSession(
-                cookie_jar=jar,
-                headers={
-                    "User-Agent": USER_AGENT,
-                    "Accept": "application/json",
-                    "Accept-Language": "en-GB,en;q=0.5",
-                }
-            )
-        return self._session
-
-    async def login(self) -> bool:
-        """Authenticate with the Flogas portal using Laravel Sanctum."""
-        try:
-            session = await self._get_session()
-            
-            # Step 1: Get CSRF cookie from sanctum endpoint
-            _LOGGER.debug("Fetching CSRF cookie from %s", CSRF_COOKIE_URL)
-            async with session.get(CSRF_COOKIE_URL) as response:
-                if response.status != 204:
-                    raise ConfigEntryAuthFailed(f"Failed to get CSRF cookie: {response.status}")
-            
-            # Step 2: Extract XSRF-TOKEN from cookies
-            xsrf_token = None
-            for cookie in session.cookie_jar:
-                if cookie.key == "XSRF-TOKEN":
-                    xsrf_token = urllib.parse.unquote(cookie.value)
-                    break
-            
-            if not xsrf_token:
-                raise ConfigEntryAuthFailed("XSRF-TOKEN cookie not found")
-            
-            _LOGGER.debug("Got XSRF token, attempting login")
-            
-            # Step 3: POST login with credentials and XSRF token header
-            # API expects 'accountReference' not 'email'
-            login_data = {
-                "accountReference": self.email,
-                "password": self.password,
-            }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-XSRF-TOKEN": xsrf_token,
-            }
-            
-            async with session.post(
-                LOGIN_URL, 
-                json=login_data, 
-                headers=headers
-            ) as response:
-                data = await response.json()
-                
-                if response.status == 419:
-                    raise ConfigEntryAuthFailed("CSRF token mismatch - authentication failed")
-                
-                if not data.get("success"):
-                    errors = data.get("errors", {})
-                    error_str = str(errors).lower()
-                    if "credentials" in error_str or "invalid" in error_str or "password" in error_str:
-                        raise ConfigEntryAuthFailed("Invalid email or password")
-                    raise ConfigEntryAuthFailed(f"Login failed: {errors}")
-                
-                # Extract token from response
-                response_data = data.get("response", {})
-                self._token = response_data.get("token")
-                
-                if not self._token:
-                    _LOGGER.warning("Token not in response, checking session")
-                
-                _LOGGER.debug("Successfully logged in to Flogas portal")
-                return True
-
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Connection error during login: {err}") from err
-
-    async def get_tank_data(self) -> dict:
-        """Fetch tank data from the API."""
-        try:
-            session = await self._get_session()
-            
-            headers = {
-                "Accept": "application/json",
-            }
-            if self._token:
-                headers["Authorization"] = f"Bearer {self._token}"
-            
-            # Get XSRF token for the request
-            for cookie in session.cookie_jar:
-                if cookie.key == "XSRF-TOKEN":
-                    headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
-                    break
-            
-            async with session.get(API_DATA_URL, headers=headers) as response:
-                if response.status in [401, 403, 419]:
-                    _LOGGER.debug("Session expired, attempting re-login")
-                    await self.login()
-                    if self._token:
-                        headers["Authorization"] = f"Bearer {self._token}"
-                    for cookie in session.cookie_jar:
-                        if cookie.key == "XSRF-TOKEN":
-                            headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
-                            break
-                    async with session.get(API_DATA_URL, headers=headers) as retry_response:
-                        if retry_response.status != 200:
-                            raise UpdateFailed(f"Failed to get data after re-login: {retry_response.status}")
-                        data = await retry_response.json()
-                elif response.status != 200:
-                    raise UpdateFailed(f"Failed to get tank data: {response.status}")
-                else:
-                    data = await response.json()
-            
-            if not data.get("success"):
-                errors = data.get("errors", ["Unknown error"])
-                raise UpdateFailed(f"API error: {errors}")
-            
-            response_data = data.get("response", {})
-            
-            return {
-                "tank_capacity": response_data.get("tankCapacity"),
-                "remaining_percentage": response_data.get("remainingPercentage"),
-                "days_remaining": response_data.get("daysRemaining"),
-                "last_reading_date": response_data.get("lastGaugeReadingDate"),
-                "last_reading_date_iso": response_data.get("lastGaugeReadingDateIso"),
-                "min_order_litres": response_data.get("minLitres"),
-                "max_order_litres": response_data.get("maxLitres"),
-            }
-
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Connection error fetching tank data: {err}") from err
-
-    async def close(self) -> None:
-        """Close the session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
+API_BASE_URL = "https://datalayer.flogas.co.uk"
+API_CSRF_URL = f"{API_BASE_URL}/sanctum/csrf-cookie"
+API_LOGIN_URL = f"{API_BASE_URL}/portal/customer/login"
+API_DATA_URL = f"{API_BASE_URL}/portal/bulk/data"
+API_CUSTOMER_URL = f"{API_BASE_URL}/portal/customer"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Flogas from a config entry."""
-    email = entry.data[CONF_EMAIL]
-    password = entry.data[CONF_PASSWORD]
-
-    api = FlogasAPI(email, password)
-
-    try:
-        await api.login()
-    except ConfigEntryAuthFailed:
-        await api.close()
-        raise
+    api = FlogasAPI(
+        entry.data["account_reference"],
+        entry.data["password"],
+    )
 
     coordinator = FlogasDataUpdateCoordinator(
         hass,
         api=api,
-        update_interval=DEFAULT_SCAN_INTERVAL,
+        update_interval=timedelta(hours=1),
     )
 
     await coordinator.async_config_entry_first_refresh()
@@ -215,13 +51,164 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        coordinator: FlogasDataUpdateCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        await coordinator.api.close()
+        hass.data[DOMAIN].pop(entry.entry_id)
 
     return unload_ok
 
 
-class FlogasDataUpdateCoordinator(DataUpdateCoordinator):
+class FlogasAPI:
+    """Flogas API client."""
+
+    def __init__(self, account_reference: str, password: str) -> None:
+        """Initialize the API."""
+        self._account_reference = account_reference
+        self._password = password
+        self._token: str | None = None
+        self._session: aiohttp.ClientSession | None = None
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        """Ensure we have an aiohttp session."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def login(self) -> bool:
+        """Login to the Flogas API."""
+        session = await self._ensure_session()
+
+        # Get CSRF cookie
+        async with session.get(API_CSRF_URL) as response:
+            if response.status != 204:
+                _LOGGER.error("Failed to get CSRF cookie: %s", response.status)
+                return False
+
+        # Get XSRF token from cookies
+        xsrf_token = None
+        for cookie in session.cookie_jar:
+            if cookie.key == "XSRF-TOKEN":
+                xsrf_token = urllib.parse.unquote(cookie.value)
+                break
+
+        if not xsrf_token:
+            _LOGGER.error("No XSRF token found in cookies")
+            return False
+
+        # Login
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-XSRF-TOKEN": xsrf_token,
+        }
+        data = {
+            "accountReference": self._account_reference,
+            "password": self._password,
+        }
+
+        async with session.post(API_LOGIN_URL, json=data, headers=headers) as response:
+            if response.status != 200:
+                result = await response.json()
+                _LOGGER.error("Login failed: %s", result)
+                return False
+
+            result = await response.json()
+            if result.get("success"):
+                self._token = result.get("response", {}).get("token")
+                _LOGGER.debug("Login successful, token: %s...", self._token[:20] if self._token else None)
+                return True
+            else:
+                _LOGGER.error("Login failed: %s", result)
+                return False
+
+    async def get_tank_data(self) -> dict[str, Any]:
+        """Get tank data from the API."""
+        session = await self._ensure_session()
+
+        headers = {
+            "Accept": "application/json",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        # Get XSRF token for the request
+        for cookie in session.cookie_jar:
+            if cookie.key == "XSRF-TOKEN":
+                headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
+                break
+
+        async with session.get(API_DATA_URL, headers=headers) as response:
+            if response.status in [401, 403, 419]:
+                _LOGGER.debug("Session expired, attempting re-login")
+                await self.login()
+                return await self.get_tank_data()
+
+            if response.status != 200:
+                raise UpdateFailed(f"Error fetching data: {response.status}")
+
+            result = await response.json()
+
+            if not result.get("success"):
+                raise UpdateFailed(f"API error: {result}")
+
+            data = result.get("response", {})
+            return {
+                "remaining_percentage": data.get("remainingPercentage"),
+                "days_remaining": data.get("daysRemaining"),
+                "tank_capacity": data.get("tankCapacity"),
+                "last_reading_date": data.get("lastGaugeReadingDate"),
+            }
+
+    async def get_customer_data(self) -> dict[str, Any]:
+        """Get customer data including balance from the API."""
+        session = await self._ensure_session()
+
+        headers = {
+            "Accept": "application/json",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        # Get XSRF token for the request
+        for cookie in session.cookie_jar:
+            if cookie.key == "XSRF-TOKEN":
+                headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
+                break
+
+        async with session.get(API_CUSTOMER_URL, headers=headers) as response:
+            if response.status in [401, 403, 419]:
+                _LOGGER.debug("Session expired, attempting re-login")
+                await self.login()
+                return await self.get_customer_data()
+
+            if response.status != 200:
+                _LOGGER.warning("Error fetching customer data: %s", response.status)
+                return {}
+
+            result = await response.json()
+
+            if not result.get("success"):
+                _LOGGER.warning("Customer API error: %s", result)
+                return {}
+
+            customer = result.get("response", {}).get("customer", {})
+            return {
+                "balance": customer.get("balance"),
+            }
+
+    async def get_all_data(self) -> dict[str, Any]:
+        """Get all data from both tank and customer endpoints."""
+        tank_data = await self.get_tank_data()
+        customer_data = await self.get_customer_data()
+        
+        # Merge the data
+        return {**tank_data, **customer_data}
+
+    async def close(self) -> None:
+        """Close the session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+
+class FlogasDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching Flogas data."""
 
     def __init__(
@@ -242,4 +229,4 @@ class FlogasDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         """Fetch data from API."""
-        return await self.api.get_tank_data()
+        return await self.api.get_all_data()
