@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from datetime import timedelta
-from http.cookies import SimpleCookie
 
 import aiohttp
 
@@ -19,7 +19,6 @@ from homeassistant.helpers.update_coordinator import (
 from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
-    API_BASE_URL,
     API_DATA_URL,
     CSRF_COOKIE_URL,
     LOGIN_URL,
@@ -72,8 +71,6 @@ class FlogasAPI:
             xsrf_token = None
             for cookie in session.cookie_jar:
                 if cookie.key == "XSRF-TOKEN":
-                    # URL decode the token (it's URL encoded in the cookie)
-                    import urllib.parse
                     xsrf_token = urllib.parse.unquote(cookie.value)
                     break
             
@@ -83,8 +80,9 @@ class FlogasAPI:
             _LOGGER.debug("Got XSRF token, attempting login")
             
             # Step 3: POST login with credentials and XSRF token header
+            # API expects 'accountReference' not 'email'
             login_data = {
-                "email": self.email,
+                "accountReference": self.email,
                 "password": self.password,
             }
             
@@ -106,7 +104,8 @@ class FlogasAPI:
                 
                 if not data.get("success"):
                     errors = data.get("errors", {})
-                    if "credentials" in str(errors).lower() or "email" in errors or "password" in errors:
+                    error_str = str(errors).lower()
+                    if "credentials" in error_str or "invalid" in error_str or "password" in error_str:
                         raise ConfigEntryAuthFailed("Invalid email or password")
                     raise ConfigEntryAuthFailed(f"Login failed: {errors}")
                 
@@ -115,7 +114,6 @@ class FlogasAPI:
                 self._token = response_data.get("token")
                 
                 if not self._token:
-                    # Token might be in cookies or different location
                     _LOGGER.warning("Token not in response, checking session")
                 
                 _LOGGER.debug("Successfully logged in to Flogas portal")
@@ -136,24 +134,19 @@ class FlogasAPI:
                 headers["Authorization"] = f"Bearer {self._token}"
             
             # Get XSRF token for the request
-            xsrf_token = None
             for cookie in session.cookie_jar:
                 if cookie.key == "XSRF-TOKEN":
-                    import urllib.parse
-                    xsrf_token = urllib.parse.unquote(cookie.value)
-                    headers["X-XSRF-TOKEN"] = xsrf_token
+                    headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
                     break
             
             async with session.get(API_DATA_URL, headers=headers) as response:
                 if response.status in [401, 403, 419]:
                     _LOGGER.debug("Session expired, attempting re-login")
                     await self.login()
-                    # Update headers with new token
                     if self._token:
                         headers["Authorization"] = f"Bearer {self._token}"
                     for cookie in session.cookie_jar:
                         if cookie.key == "XSRF-TOKEN":
-                            import urllib.parse
                             headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
                             break
                     async with session.get(API_DATA_URL, headers=headers) as retry_response:
