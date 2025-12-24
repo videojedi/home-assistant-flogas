@@ -28,7 +28,7 @@ API_CUSTOMER_URL = f"{API_BASE_URL}/portal/customer"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Flogas from a config entry."""
     api = FlogasAPI(
-        entry.data["account_reference"],
+        entry.data["email"],
         entry.data["password"],
     )
 
