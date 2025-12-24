@@ -17,6 +17,7 @@ This integration connects to the Flogas My Account portal and retrieves your tan
 | **Days Remaining** | Estimated days until empty | days |
 | **Tank Capacity** | Total tank capacity | litres |
 | **Last Reading Date** | Date of last gauge reading | - |
+| **Account Balance** | Current account credit/debit | GBP |
 
 ## Installation
 

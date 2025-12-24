@@ -23,7 +23,7 @@ from . import FlogasDataUpdateCoordinator
 @dataclass(frozen=True)
 class FlogasSensorEntityDescription(SensorEntityDescription):
     """Describes Flogas sensor entity."""
-    
+
     value_key: str = ""
 
 
@@ -58,6 +58,14 @@ SENSOR_TYPES: tuple[FlogasSensorEntityDescription, ...] = (
         name="Last Reading Date",
         icon="mdi:calendar",
         value_key="last_reading_date",
+    ),
+    FlogasSensorEntityDescription(
+        key="account_balance",
+        name="Account Balance",
+        native_unit_of_measurement="GBP",
+        device_class=SensorDeviceClass.MONETARY,
+        icon="mdi:currency-gbp",
+        value_key="balance",
     ),
 )
 
@@ -94,9 +102,8 @@ class FlogasSensor(CoordinatorEntity[FlogasDataUpdateCoordinator], SensorEntity)
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": "Flogas LPG Tank",
+            "name": "Flogas Tank",
             "manufacturer": "Flogas",
-            "model": "Bulk LPG Tank",
         }
 
     @property
