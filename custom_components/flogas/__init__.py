@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import timedelta
+from http.cookies import SimpleCookie
 
 import aiohttp
 
@@ -19,10 +19,12 @@ from homeassistant.helpers.update_coordinator import (
 from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
+    API_BASE_URL,
     API_DATA_URL,
+    CSRF_COOKIE_URL,
+    LOGIN_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    LOGIN_URL,
     USER_AGENT,
 )
 
@@ -44,89 +46,83 @@ class FlogasAPI:
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session."""
         if self._session is None or self._session.closed:
-            headers = {
-                "User-Agent": USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-GB,en;q=0.5",
-            }
-            self._session = aiohttp.ClientSession(headers=headers)
+            jar = aiohttp.CookieJar()
+            self._session = aiohttp.ClientSession(
+                cookie_jar=jar,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/json",
+                    "Accept-Language": "en-GB,en;q=0.5",
+                }
+            )
         return self._session
 
     async def login(self) -> bool:
-        """Authenticate with the Flogas portal and get token."""
+        """Authenticate with the Flogas portal using Laravel Sanctum."""
         try:
             session = await self._get_session()
             
-            # First, get the login page to get any CSRF token
-            async with session.get(LOGIN_URL) as response:
-                if response.status != 200:
-                    raise ConfigEntryAuthFailed(f"Failed to get login page: {response.status}")
-                html = await response.text()
+            # Step 1: Get CSRF cookie from sanctum endpoint
+            _LOGGER.debug("Fetching CSRF cookie from %s", CSRF_COOKIE_URL)
+            async with session.get(CSRF_COOKIE_URL) as response:
+                if response.status != 204:
+                    raise ConfigEntryAuthFailed(f"Failed to get CSRF cookie: {response.status}")
             
-            # Extract CSRF token from the page
-            csrf_match = re.search(r'name="_token"\s+value="([^"]+)"', html)
-            if not csrf_match:
-                csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', html)
+            # Step 2: Extract XSRF-TOKEN from cookies
+            xsrf_token = None
+            for cookie in session.cookie_jar:
+                if cookie.key == "XSRF-TOKEN":
+                    # URL decode the token (it's URL encoded in the cookie)
+                    import urllib.parse
+                    xsrf_token = urllib.parse.unquote(cookie.value)
+                    break
             
-            csrf_token = csrf_match.group(1) if csrf_match else ""
+            if not xsrf_token:
+                raise ConfigEntryAuthFailed("XSRF-TOKEN cookie not found")
             
-            # Submit login
+            _LOGGER.debug("Got XSRF token, attempting login")
+            
+            # Step 3: POST login with credentials and XSRF token header
             login_data = {
-                "_token": csrf_token,
                 "email": self.email,
                 "password": self.password,
             }
             
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-XSRF-TOKEN": xsrf_token,
+            }
+            
             async with session.post(
-                LOGIN_URL, data=login_data, allow_redirects=True
+                LOGIN_URL, 
+                json=login_data, 
+                headers=headers
             ) as response:
-                if response.status != 200:
-                    raise ConfigEntryAuthFailed(f"Login failed with status: {response.status}")
-            
-            # Get the overview page which should have the token
-            async with session.get("https://myaccount.flogas.co.uk/overview") as response:
-                if response.status != 200:
-                    raise ConfigEntryAuthFailed("Failed to access dashboard after login")
-                html = await response.text()
-            
-            # Look for the API token in the page source
-            token_match = re.search(r'"token"\s*:\s*"([^"]+)"', html)
-            if not token_match:
-                token_match = re.search(r"localStorage\.setItem\(['\"]token['\"]\s*,\s*['\"]([^'\"]+)['\"]", html)
-            
-            if token_match:
-                self._token = token_match.group(1)
-                _LOGGER.debug("Successfully obtained API token")
-                return True
-            
-            # Try making an API call with session cookies
-            test_data = await self._fetch_data_with_session(session)
-            if test_data:
-                _LOGGER.debug("Session authentication successful")
-                return True
+                data = await response.json()
                 
-            raise ConfigEntryAuthFailed("Could not obtain API token after login")
+                if response.status == 419:
+                    raise ConfigEntryAuthFailed("CSRF token mismatch - authentication failed")
+                
+                if not data.get("success"):
+                    errors = data.get("errors", {})
+                    if "credentials" in str(errors).lower() or "email" in errors or "password" in errors:
+                        raise ConfigEntryAuthFailed("Invalid email or password")
+                    raise ConfigEntryAuthFailed(f"Login failed: {errors}")
+                
+                # Extract token from response
+                response_data = data.get("response", {})
+                self._token = response_data.get("token")
+                
+                if not self._token:
+                    # Token might be in cookies or different location
+                    _LOGGER.warning("Token not in response, checking session")
+                
+                _LOGGER.debug("Successfully logged in to Flogas portal")
+                return True
 
         except aiohttp.ClientError as err:
             raise UpdateFailed(f"Connection error during login: {err}") from err
-
-    async def _fetch_data_with_session(self, session: aiohttp.ClientSession) -> dict | None:
-        """Try to fetch data using session cookies."""
-        headers = {
-            "Accept": "application/json",
-        }
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-            
-        try:
-            async with session.get(API_DATA_URL, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("success"):
-                        return data.get("response", {})
-        except Exception:
-            pass
-        return None
 
     async def get_tank_data(self) -> dict:
         """Fetch tank data from the API."""
@@ -139,12 +135,27 @@ class FlogasAPI:
             if self._token:
                 headers["Authorization"] = f"Bearer {self._token}"
             
+            # Get XSRF token for the request
+            xsrf_token = None
+            for cookie in session.cookie_jar:
+                if cookie.key == "XSRF-TOKEN":
+                    import urllib.parse
+                    xsrf_token = urllib.parse.unquote(cookie.value)
+                    headers["X-XSRF-TOKEN"] = xsrf_token
+                    break
+            
             async with session.get(API_DATA_URL, headers=headers) as response:
-                if response.status == 401 or response.status == 403:
+                if response.status in [401, 403, 419]:
                     _LOGGER.debug("Session expired, attempting re-login")
                     await self.login()
+                    # Update headers with new token
                     if self._token:
                         headers["Authorization"] = f"Bearer {self._token}"
+                    for cookie in session.cookie_jar:
+                        if cookie.key == "XSRF-TOKEN":
+                            import urllib.parse
+                            headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
+                            break
                     async with session.get(API_DATA_URL, headers=headers) as retry_response:
                         if retry_response.status != 200:
                             raise UpdateFailed(f"Failed to get data after re-login: {retry_response.status}")

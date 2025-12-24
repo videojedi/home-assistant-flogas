@@ -7,9 +7,10 @@ DOMAIN = "flogas"
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 
-# API URLs
-LOGIN_URL = "https://myaccount.flogas.co.uk/login"
+# API URLs - Laravel Sanctum authentication pattern
 API_BASE_URL = "https://datalayer.flogas.co.uk"
+CSRF_COOKIE_URL = f"{API_BASE_URL}/sanctum/csrf-cookie"
+LOGIN_URL = f"{API_BASE_URL}/portal/customer/login"
 API_DATA_URL = f"{API_BASE_URL}/portal/bulk/data"
 
 # Defaults
