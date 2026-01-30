@@ -65,17 +65,20 @@ severity:
 ## Example Automation
 
 ```yaml
-automation:
-  - alias: "Low LPG Alert"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.flogas_lpg_tank_tank_level
-        below: 25
-    action:
-      - service: notify.mobile_app
-        data:
-          title: "Low LPG Level"
-          message: "Tank is at {{ states('sensor.flogas_lpg_tank_tank_level') }}%"
+alias: LPG level warning
+description: ""
+triggers:
+  - trigger: numeric_state
+    entity_id:
+      - sensor.flogas_lpg_tank_tank_level
+    below: 45
+conditions: []
+actions:
+  - action: notify.all_devices
+    metadata: {}
+    data:
+      message: LPG Tank is at {{ states('sensor.flogas_lpg_tank_tank_level') }}%
+mode: single
 ```
 
 ## Technical Details
