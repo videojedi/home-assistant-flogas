@@ -7,9 +7,10 @@ from typing import Any
 import urllib.parse
 
 import aiohttp
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
@@ -18,11 +19,21 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
+SERVICE_SUBMIT_GAUGE = "submit_gauge_reading"
+ATTR_READING = "reading"
+
+SERVICE_SUBMIT_GAUGE_SCHEMA = vol.Schema({
+    vol.Required(ATTR_READING): vol.All(
+        vol.Coerce(int), vol.Range(min=0, max=100)
+    ),
+})
+
 API_BASE_URL = "https://datalayer.flogas.co.uk"
 API_CSRF_URL = f"{API_BASE_URL}/sanctum/csrf-cookie"
 API_LOGIN_URL = f"{API_BASE_URL}/portal/customer/login"
 API_DATA_URL = f"{API_BASE_URL}/portal/bulk/data"
 API_CUSTOMER_URL = f"{API_BASE_URL}/portal/customer"
+API_GAUGE_URL = f"{API_BASE_URL}/portal/bulk/gauge"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -42,6 +53,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
+
+    # Register services
+    async def handle_submit_gauge(call: ServiceCall) -> None:
+        """Handle the submit_gauge_reading service call."""
+        reading = call.data[ATTR_READING]
+        _LOGGER.debug("Service called: submit_gauge_reading with reading=%d", reading)
+
+        # Use the first available coordinator's API
+        for coord in hass.data[DOMAIN].values():
+            if hasattr(coord, "api"):
+                result = await coord.api.submit_gauge_reading(reading)
+                if result.get("success"):
+                    # Refresh data after successful submission
+                    await coord.async_request_refresh()
+                return
+
+    # Only register service once (not per entry)
+    if not hass.services.has_service(DOMAIN, SERVICE_SUBMIT_GAUGE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SUBMIT_GAUGE,
+            handle_submit_gauge,
+            schema=SERVICE_SUBMIT_GAUGE_SCHEMA,
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -201,6 +236,54 @@ class FlogasAPI:
         
         # Merge the data
         return {**tank_data, **customer_data}
+
+    async def submit_gauge_reading(self, reading: int) -> dict[str, Any]:
+        """Submit a tank gauge reading to Flogas.
+
+        Args:
+            reading: Tank level as a percentage (0-100).
+
+        Returns:
+            API response dict with success status.
+        """
+        if not 0 <= reading <= 100:
+            raise ValueError("Reading must be between 0 and 100")
+
+        session = await self._ensure_session()
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        # Get XSRF token for the request
+        for cookie in session.cookie_jar:
+            if cookie.key == "XSRF-TOKEN":
+                headers["X-XSRF-TOKEN"] = urllib.parse.unquote(cookie.value)
+                break
+
+        data = {"reading": reading}
+
+        async with session.post(API_GAUGE_URL, json=data, headers=headers) as response:
+            if response.status in [401, 403, 419]:
+                _LOGGER.debug("Session expired, attempting re-login")
+                await self.login()
+                return await self.submit_gauge_reading(reading)
+
+            result = await response.json()
+
+            if response.status != 200:
+                _LOGGER.error("Gauge submission failed: %s - %s", response.status, result)
+                return {"success": False, "error": result}
+
+            if not result.get("success"):
+                _LOGGER.error("Gauge submission API error: %s", result)
+                return {"success": False, "error": result}
+
+            _LOGGER.info("Successfully submitted gauge reading: %d%%", reading)
+            return {"success": True, "response": result.get("response", {})}
 
     async def close(self) -> None:
         """Close the session."""

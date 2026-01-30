@@ -1,0 +1,15 @@
+submit_gauge_reading:
+  name: Submit Tank Gauge Reading
+  description: Submit a tank gauge reading to Flogas. The reading should be the current tank level as shown on your gauge (0-100%).
+  fields:
+    reading:
+      name: Reading
+      description: Tank level percentage (0-100)
+      required: true
+      example: 60
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider

@@ -26,5 +26,17 @@
       "already_configured": "This account is already configured",
       "reauth_successful": "Re-authentication successful"
     }
+  },
+  "services": {
+    "submit_gauge_reading": {
+      "name": "Submit Tank Gauge Reading",
+      "description": "Submit a tank gauge reading to Flogas.",
+      "fields": {
+        "reading": {
+          "name": "Reading",
+          "description": "Tank level percentage (0-100)"
+        }
+      }
+    }
   }
 }
