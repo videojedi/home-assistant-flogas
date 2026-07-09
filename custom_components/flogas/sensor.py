@@ -32,7 +32,6 @@ SENSOR_TYPES: tuple[FlogasSensorEntityDescription, ...] = (
         key="tank_level",
         name="Tank Level",
         native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:propane-tank",
         value_key="remaining_percentage",
@@ -105,6 +104,24 @@ class FlogasSensor(CoordinatorEntity[FlogasDataUpdateCoordinator], SensorEntity)
             "name": "Flogas Tank",
             "manufacturer": "Flogas",
         }
+
+    @property
+    def icon(self) -> str:
+        """Return dynamic icon based on tank level."""
+        if self.entity_description.key == "tank_level" and self.coordinator.data:
+            level = self.coordinator.data.get("remaining_percentage")
+            if level is not None and level < 40:
+                return "mdi:propane-tank-outline"
+        return self.entity_description.icon
+
+    @property
+    def icon_color(self) -> str | None:
+        """Return blue above 40%, amber below."""
+        if self.entity_description.key == "tank_level" and self.coordinator.data:
+            level = self.coordinator.data.get("remaining_percentage")
+            if level is not None:
+                return "#ff9800" if level < 40 else "#03a9f4"
+        return None
 
     @property
     def native_value(self) -> Any:
