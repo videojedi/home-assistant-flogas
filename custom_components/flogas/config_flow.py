@@ -36,21 +36,24 @@ class FlogasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             api = FlogasAPI(user_input[CONF_EMAIL], user_input[CONF_PASSWORD])
-            
+
             try:
-                await api.login()
-                await api.close()
-                
-                await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
-                self._abort_if_unique_id_configured()
-                
-                return self.async_create_entry(
-                    title=f"Flogas ({user_input[CONF_EMAIL]})",
-                    data=user_input,
-                )
+                login_ok = await api.login()
+
+                if not login_ok:
+                    # login() returned False — bad credentials or API unreachable
+                    errors["base"] = "invalid_auth"
+                else:
+                    await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
+                    self._abort_if_unique_id_configured()
+
+                    return self.async_create_entry(
+                        title=f"Flogas ({user_input[CONF_EMAIL]})",
+                        data=user_input,
+                    )
             except Exception as err:
-                _LOGGER.error("Failed to authenticate with Flogas: %s", err)
-                errors["base"] = "invalid_auth"
+                _LOGGER.error("Unexpected error authenticating with Flogas: %s", err)
+                errors["base"] = "cannot_connect"
             finally:
                 await api.close()
 
@@ -74,21 +77,24 @@ class FlogasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             api = FlogasAPI(user_input[CONF_EMAIL], user_input[CONF_PASSWORD])
-            
+
             try:
-                await api.login()
-                
-                entry = self.hass.config_entries.async_get_entry(
-                    self.context["entry_id"]
-                )
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data=user_input,
-                )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
+                login_ok = await api.login()
+
+                if not login_ok:
+                    errors["base"] = "invalid_auth"
+                else:
+                    entry = self.hass.config_entries.async_get_entry(
+                        self.context["entry_id"]
+                    )
+                    self.hass.config_entries.async_update_entry(
+                        entry,
+                        data=user_input,
+                    )
+                    await self.hass.config_entries.async_reload(entry.entry_id)
+                    return self.async_abort(reason="reauth_successful")
             except Exception:
-                errors["base"] = "invalid_auth"
+                errors["base"] = "cannot_connect"
             finally:
                 await api.close()
 
