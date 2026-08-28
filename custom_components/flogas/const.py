@@ -1,20 +1,12 @@
 """Constants for the Flogas integration."""
-from datetime import timedelta
 
 DOMAIN = "flogas"
 
-# Configuration
-CONF_EMAIL = "email"
-CONF_PASSWORD = "password"
-
-# API URLs - Laravel Sanctum authentication pattern
+BASE_WEB_URL = "https://myaccount.flogas.co.uk"
 API_BASE_URL = "https://datalayer.flogas.co.uk"
-CSRF_COOKIE_URL = f"{API_BASE_URL}/sanctum/csrf-cookie"
 LOGIN_URL = f"{API_BASE_URL}/portal/customer/login"
-API_DATA_URL = f"{API_BASE_URL}/portal/bulk/data"
+CSRF_URL = f"{API_BASE_URL}/sanctum/csrf-cookie"
+DATA_URL = f"{API_BASE_URL}/portal/overview/data-bulk"
 
-# Defaults
-DEFAULT_SCAN_INTERVAL = timedelta(hours=1)
-
-# User agent
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"

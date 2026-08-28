@@ -1,26 +1,62 @@
 """Config flow for Flogas integration."""
-from __future__ import annotations
-
 import logging
-from typing import Any
-
+import urllib.parse
+import requests
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.core import callback
 
-from .const import DOMAIN
-from . import FlogasAPI
+from .const import (
+    DOMAIN,
+    BASE_WEB_URL,
+    API_BASE_URL,
+    LOGIN_URL,
+    CSRF_URL,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_EMAIL): str,
-        vol.Required(CONF_PASSWORD): str,
+
+def validate_input(username, password):
+    """Validate user credentials against the new Flogas API."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": BASE_WEB_URL,
+        "Referer": f"{BASE_WEB_URL}/",
+        "Content-Type": "application/json",
+    })
+
+    # CSRF Handshake
+    session.get(BASE_WEB_URL)
+    session.get(CSRF_URL)
+
+    xsrf_cookie = session.cookies.get("XSRF-TOKEN")
+    if xsrf_cookie:
+        session.headers.update({"X-XSRF-TOKEN": urllib.parse.unquote(xsrf_cookie)})
+
+    # Login payload
+    payload = {
+        "accountReference": username,
+        "password": password,
+        "mfaCode": "",
+        "remember": "1"
     }
-)
+
+    res = session.post(LOGIN_URL, json=payload)
+    if res.status_code != 200:
+        raise Exception(f"Invalid auth (HTTP {res.status_code})")
+
+    res_data = res.json()
+    token = res_data.get("token") or res_data.get("response", {}).get("token")
+    if not token:
+        raise Exception("Login succeeded but no token was returned.")
+
+    return True
 
 
 class FlogasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -28,72 +64,36 @@ class FlogasConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_user(self, user_input=None):
         """Handle the initial step."""
-        errors: dict[str, str] = {}
+        errors = {}
 
         if user_input is not None:
-            api = FlogasAPI(user_input[CONF_EMAIL], user_input[CONF_PASSWORD])
-            
             try:
-                await api.login()
-                await api.close()
-                
-                await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
-                self._abort_if_unique_id_configured()
-                
-                return self.async_create_entry(
-                    title=f"Flogas ({user_input[CONF_EMAIL]})",
-                    data=user_input,
+                await self.hass.async_add_executor_job(
+                    validate_input,
+                    user_input[CONF_USERNAME],
+                    user_input[CONF_PASSWORD],
                 )
             except Exception as err:
-                _LOGGER.error("Failed to authenticate with Flogas: %s", err)
+                _LOGGER.error("Failed to authenticate with Flogas API: %s", err)
                 errors["base"] = "invalid_auth"
-            finally:
-                await api.close()
+            else:
+                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
+                self._abort_if_unique_id_configured()
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
-            errors=errors,
-        )
-
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> FlowResult:
-        """Handle reauthorization."""
-        return await self.async_step_reauth_confirm()
-
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle reauthorization confirmation."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            api = FlogasAPI(user_input[CONF_EMAIL], user_input[CONF_PASSWORD])
-            
-            try:
-                await api.login()
-                
-                entry = self.hass.config_entries.async_get_entry(
-                    self.context["entry_id"]
-                )
-                self.hass.config_entries.async_update_entry(
-                    entry,
+                return self.async_create_entry(
+                    title=f"Flogas ({user_input[CONF_USERNAME]})",
                     data=user_input,
                 )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
-            except Exception:
-                errors["base"] = "invalid_auth"
-            finally:
-                await api.close()
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_USERNAME): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
 
         return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=STEP_USER_DATA_SCHEMA,
-            errors=errors,
+            step_id="user", data_schema=data_schema, errors=errors
         )
