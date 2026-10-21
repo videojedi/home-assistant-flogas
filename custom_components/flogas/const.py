@@ -7,14 +7,15 @@ DOMAIN = "flogas"
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 
-# API URLs - Laravel Sanctum authentication pattern
+# API - Laravel Sanctum authentication pattern
 API_BASE_URL = "https://datalayer.flogas.co.uk"
-CSRF_COOKIE_URL = f"{API_BASE_URL}/sanctum/csrf-cookie"
-LOGIN_URL = f"{API_BASE_URL}/portal/customer/login"
-API_DATA_URL = f"{API_BASE_URL}/portal/bulk/data"
 
-# Defaults
-DEFAULT_SCAN_INTERVAL = timedelta(hours=1)
+# Telemetry reports roughly once a day, so there is no point polling hard
+DEFAULT_SCAN_INTERVAL = timedelta(hours=3)
 
-# User agent
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+# Data sources
+SOURCE_TELEMETRY = "telemetry"
+SOURCE_GAUGE = "gauge"
+
+SERVICE_SUBMIT_GAUGE = "submit_gauge_reading"
+ATTR_READING = "reading"

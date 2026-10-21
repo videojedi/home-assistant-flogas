@@ -3,24 +3,24 @@
     "step": {
       "user": {
         "title": "Flogas Account",
-        "description": "Enter your Flogas My Account credentials",
+        "description": "Enter your Flogas My Account login. If your email is rejected, try your account number instead.",
         "data": {
-          "email": "Email",
+          "email": "Email or account number",
           "password": "Password"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Flogas",
-        "description": "Your Flogas credentials have expired. Please re-enter them.",
+        "description": "Flogas rejected the saved login for {account}. Enter the current password.",
         "data": {
-          "email": "Email",
           "password": "Password"
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password",
-      "cannot_connect": "Failed to connect to Flogas"
+      "invalid_auth": "Flogas rejected the login",
+      "cannot_connect": "Failed to connect to Flogas",
+      "unknown": "Unexpected error, see the logs"
     },
     "abort": {
       "already_configured": "This account is already configured",
